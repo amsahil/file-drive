@@ -29,6 +29,9 @@ RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
 # Permissions for storage & cache
 RUN chown -R www-data:www-data storage bootstrap/cache
 
+# Run migrations and storage link on build
+RUN php artisan migrate --force && php artisan storage:link
+
 EXPOSE 80
 
 # Start Apache
