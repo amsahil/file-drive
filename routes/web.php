@@ -1,8 +1,10 @@
 <?php
 
-use App\Http\Controllers\ProfileController;
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\FileUploadController;
+use App\Http\Controllers\ProfileController;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Route;
+
 
 
 Route::get('/', function () {
@@ -26,6 +28,10 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/files', [FileUploadController::class, 'store'])->name('files.store');
     Route::get('/files/{fileUpload}/download', [FileUploadController::class, 'download'])->name('files.download');
     Route::delete('/files/{fileUpload}', [FileUploadController::class, 'destroy'])->name('files.destroy');
+});
+Route::get('/run-migrations', function () {
+    Artisan::call('migrate --force');
+    return 'Migrations executed!';
 });
 
 
