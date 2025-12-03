@@ -1,12 +1,15 @@
-<nav x-data="{ open: false }" class="bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700">
+<nav x-data="{ open: false }" class="bg-white dark:bg-gray-950 border-b border-gray-100 dark:border-gray-800">
     <!-- Primary Navigation Menu -->
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16">
             <div class="flex">
-                <!-- Logo -->
+                <!-- Logo - Vaultio with Image -->
                 <div class="shrink-0 flex items-center">
-                    <a href="{{ route('dashboard') }}">
-                        <x-application-logo class="block h-9 w-auto fill-current text-gray-800 dark:text-gray-200" />
+                    <a href="{{ route('dashboard') }}" class="flex items-center space-x-3 group">
+                        <img src="{{ asset('vaultio2.png') }}" alt="Vaultio Logo" class="h-10 w-auto transform group-hover:scale-110 transition-transform duration-300">
+                        <!-- <span class="text-xl font-bold bg-gradient-to-r  bg-clip-text text-transparent">
+                            Vaultio
+                        </span> -->
                     </a>
                 </div>
 
