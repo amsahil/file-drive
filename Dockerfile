@@ -62,12 +62,10 @@ RUN { \
     echo "memory_limit = 512M"; \
     } > /usr/local/etc/php/conf.d/uploads.ini
 
-# copy entrypoint
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+
 
 EXPOSE 80
 
 # use entrypoint so we can run migrations, storage:link etc at startup
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
 CMD ["apache2-foreground"]
