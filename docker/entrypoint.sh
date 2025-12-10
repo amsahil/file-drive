@@ -10,6 +10,7 @@ wait_for_db() {
   echo "Waiting for DB (${DB_CONNECTION:-}) to be ready..."
 
   if [ "${DB_CONNECTION}" = "pgsql" ]; then
+    # use pg_isready if available, else try a php check
     for i in $(seq 1 30); do
       if php -r "try { new PDO('pgsql:host=${DB_HOST:-} ;port=${DB_PORT:-5432};dbname=${DB_DATABASE:-}', '${DB_USERNAME:-}', '${DB_PASSWORD:-}'); echo 'ok'; } catch(Exception \$e) { exit(1);}"; then
         echo "Postgres is ready"
@@ -19,7 +20,9 @@ wait_for_db() {
     done
     echo "Postgres did not become ready in time"
     return 1
+
   else
+    # mysql / mariadb
     for i in $(seq 1 30); do
       if php -r "try { new PDO('mysql:host=${DB_HOST:-};port=${DB_PORT:-};dbname=${DB_DATABASE:-}', '${DB_USERNAME:-}', '${DB_PASSWORD:-}'); echo 'ok'; } catch(Exception \$e) { exit(1);}"; then
         echo "MySQL is ready"
