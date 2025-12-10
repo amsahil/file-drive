@@ -1,43 +1,73 @@
-# Use PHP with Apache
-FROM php:8.2-apache
+# syntax=docker/dockerfile:1.4
+########################################
+# Builder stage (composer + vendor)
+########################################
+FROM composer:2 AS builder
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    git unzip libpq-dev libzip-dev zip \
-    && docker-php-ext-install pdo pdo_mysql pdo_pgsql zip
+WORKDIR /app
 
-# Enable Apache rewrite (needed for Laravel routes)
-RUN a2enmod rewrite
+# copy composer files only for better cache
+COPY composer.json composer.lock ./
 
-# Install Composer (copied from the official composer image)
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+# install php packages in composer (no ext needed here)
+RUN composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
 
-# Set working directory
-WORKDIR /var/www/html
-
-# Copy project files
+# copy app source
 COPY . .
 
-# Install PHP dependencies (only prod)
-RUN composer install --no-dev --optimize-autoloader
+# make sure vendor from builder is available later
+RUN composer dump-autoload --optimize
 
-# Set Apache document root to Laravel's public folder
-ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
-RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
-    /etc/apache2/sites-available/000-default.conf /etc/apache2/apache2.conf
+########################################
+# Final stage
+########################################
+FROM php:8.2-apache
 
-# Permissions for storage & cache
-RUN chown -R www-data:www-data storage bootstrap/cache
+ARG APACHE_DOCUMENT_ROOT=/var/www/html/public
+ENV APACHE_DOCUMENT_ROOT=${APACHE_DOCUMENT_ROOT}
 
-# Run migrations and storage link on build
-RUN php artisan migrate --force && php artisan storage:link
+# system deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    unzip \
+    libpq-dev \
+    libzip-dev \
+    zip \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    && docker-php-ext-configure gd --with-jpeg --with-freetype \
+    && docker-php-ext-install -j$(nproc) pdo pdo_mysql pdo_pgsql zip gd \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Increase PHP upload limits
-RUN echo "upload_max_filesize = 100M" > /usr/local/etc/php/conf.d/uploads.ini \
- && echo "post_max_size = 100M" >> /usr/local/etc/php/conf.d/uploads.ini \
- && echo "memory_limit = 256M" >> /usr/local/etc/php/conf.d/uploads.ini
+# enable apache rewrite
+RUN a2enmod rewrite
+
+# copy composer from builder
+COPY --from=builder /app /var/www/html
+
+# set working dir
+WORKDIR /var/www/html
+
+# set apache docroot to public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/000-default.conf /etc/apache2/apache2.conf
+
+# set permissions for storage & cache
+RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+
+# php ini overrides (upload limits)
+RUN { \
+    echo "upload_max_filesize = 100M"; \
+    echo "post_max_size = 100M"; \
+    echo "memory_limit = 512M"; \
+    } > /usr/local/etc/php/conf.d/uploads.ini
+
+# copy entrypoint
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 80
 
-# Start Apache
+# use entrypoint so we can run migrations, storage:link etc at startup
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["apache2-foreground"]

@@ -23,82 +23,93 @@ class FileUploadController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'file' => 'required|file|max:51200', // 50 MB
+            'file' => 'required|file|max:102400', // 100 MB (in kilobytes)
         ]);
 
-        $uploaded = $request->file('file');
+        $file = $request->file('file');
 
-        // disk from env (set FILESYSTEM_DISK=r2 or public)
-        $disk = env('FILESYSTEM_DISK', 'public');
+        // Use configured disk (r2, s3, public, etc.)
+        $disk = env('FILESYSTEM_DISK', config('filesystems.default', 'public'));
 
-        // ensure unique name
-        $filename = time() . '_' . Str::random(8) . '_' . $uploaded->getClientOriginalName();
-        $path = 'user-files/' . Auth::id() . '/' . $filename;
-
-        // Use stream to support remote disks (S3 / R2)
-        $stream = fopen($uploaded->getRealPath(), 'r+');
+        // Create a safe, unique filename to avoid collisions
+        $ext = $file->getClientOriginalExtension();
+        $uniqueName = now()->format('YmdHis') . '_' . Str::random(8) . '.' . $ext;
+        $storePath = 'user-files/' . Auth::id() . '/' . $uniqueName;
 
         try {
-            Storage::disk($disk)->put($path, $stream);
-        } catch (\Exception $e) {
-            // make sure to close stream before returning
-            if (is_resource($stream)) {
-                fclose($stream);
+            // Put the file on the configured disk
+            // If you need to set visibility, you can pass ['visibility' => 'public']
+            $stored = Storage::disk($disk)->putFileAs(
+                dirname($storePath),
+                $file,
+                basename($storePath)
+            );
+
+            if (! $stored) {
+                Log::error('File store returned falsy result', ['disk' => $disk, 'path' => $storePath]);
+                return back()->with('error', 'Upload failed — storage put returned false.');
             }
-            Log::error('File upload failed: ' . $e->getMessage());
-            return redirect()->route('files.index')->with('error', 'Failed to upload file.');
+
+            $record = FileUpload::create([
+                'user_id'       => Auth::id(),
+                'original_name' => $file->getClientOriginalName(),
+                'stored_path'   => $storePath,
+                'mime_type'     => $file->getClientMimeType(),
+                'size'          => $file->getSize(),
+            ]);
+
+            return redirect()
+                ->route('files.index')
+                ->with('success', 'File uploaded successfully!');
+
+        } catch (\Exception $e) {
+            Log::error('File upload exception', ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return back()->with('error', 'Upload failed: ' . $e->getMessage());
         }
-
-        if (is_resource($stream)) {
-            fclose($stream);
-        }
-
-        // create DB record
-        $record = FileUpload::create([
-            'user_id'       => Auth::id(),
-            'original_name' => $uploaded->getClientOriginalName(),
-            'stored_path'   => $path,
-            'mime_type'     => $uploaded->getClientMimeType(),
-            'size'          => $uploaded->getSize(),
-        ]);
-
-        return redirect()
-            ->route('files.index')
-            ->with('success', 'File uploaded successfully!');
     }
 
     public function download(FileUpload $fileUpload)
     {
-        // user authorization
+        // authorization
         abort_if($fileUpload->user_id !== Auth::id(), 403);
 
-        $disk = env('FILESYSTEM_DISK', 'public');
+        $disk = env('FILESYSTEM_DISK', config('filesystems.default', 'public'));
         $path = $fileUpload->stored_path;
 
-        // If file doesn't exist on disk, show message
-        if (! Storage::disk($disk)->exists($path)) {
-            return redirect()
-                ->route('files.index')
-                ->with('error', 'File not found on server.');
-        }
-
-        // If disk driver is s3 (including Cloudflare R2), generate temporary URL and redirect
-        $driver = config("filesystems.disks.{$disk}.driver");
+        Log::info('Download attempt', [
+            'user_id' => Auth::id(),
+            'disk' => $disk,
+            'path' => $path,
+        ]);
 
         try {
-            if ($driver === 's3') {
-                // temporary URL (30 minutes)
-                $url = Storage::disk($disk)->temporaryUrl($path, now()->addMinutes(30));
-                return redirect()->away($url);
-            } else {
-                // local/public disk: trigger download through Laravel
-                return Storage::disk($disk)->download($path, $fileUpload->original_name);
+            // check exists
+            if (! Storage::disk($disk)->exists($path)) {
+                Log::warning('File missing on disk', ['disk' => $disk, 'path' => $path]);
+                return redirect()->route('files.index')->with('error', 'File not found on server.');
             }
+
+            $driver = config("filesystems.disks.{$disk}.driver", null);
+
+            // If S3/R2 style drivers are used, generate a temporary URL
+            if (in_array($driver, ['s3', 'r2', 's3-compatible'])) {
+                // default to 30 minutes
+                $expires = now()->addMinutes(30);
+                try {
+                    $url = Storage::disk($disk)->temporaryUrl($path, $expires);
+                    return redirect()->away($url);
+                } catch (\Exception $ex) {
+                    // fallback to streaming download
+                    Log::warning('temporaryUrl failed, falling back to stream', ['error' => $ex->getMessage()]);
+                }
+            }
+
+            // Default: stream/download from disk
+            return Storage::disk($disk)->download($path, $fileUpload->original_name);
+
         } catch (\Exception $e) {
-            Log::error('Download failed: ' . $e->getMessage());
-            return redirect()
-                ->route('files.index')
-                ->with('error', 'Could not prepare download.');
+            Log::error('Download exception', ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return redirect()->route('files.index')->with('error', 'Download failed. See logs for details.');
         }
     }
 
@@ -106,19 +117,20 @@ class FileUploadController extends Controller
     {
         abort_if($fileUpload->user_id !== Auth::id(), 403);
 
-        $disk = env('FILESYSTEM_DISK', 'public');
-
+        $disk = env('FILESYSTEM_DISK', config('filesystems.default', 'public'));
         try {
-            Storage::disk($disk)->delete($fileUpload->stored_path);
+            if (Storage::disk($disk)->exists($fileUpload->stored_path)) {
+                Storage::disk($disk)->delete($fileUpload->stored_path);
+            } else {
+                Log::warning('File not found while trying to delete', ['disk' => $disk, 'path' => $fileUpload->stored_path]);
+            }
+
+            $fileUpload->delete();
+
+            return redirect()->route('files.index')->with('success', 'File deleted successfully.');
         } catch (\Exception $e) {
-            Log::warning('Failed to delete file from disk: ' . $e->getMessage());
-            // continue to delete DB record anyway (or choose to abort)
+            Log::error('Delete exception', ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return redirect()->route('files.index')->with('error', 'Failed to delete file.');
         }
-
-        $fileUpload->delete();
-
-        return redirect()
-            ->route('files.index')
-            ->with('success', 'File deleted successfully.');
     }
 }
